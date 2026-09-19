@@ -23,6 +23,8 @@ Cache the sanitized route while the renderer is alive. Renderer failure captures
 
 Do not use `WebView.saveState`/`restoreState`: they preserve more browsing state than this feature needs. Do not persist navigation in preferences or add a JavaScript bridge. The existing native picker/permission controllers retain responsibility for cancelling old callbacks and reserving late-result slots when this slice is combined with them.
 
+In the combined integration branch, microphone-authorized snapshots require explicit Retry even if Android saves state before `onStop`. Background teardown preserves only the scoped recovery snapshot; no cancelled document operation or microphone grant is resumed.
+
 ## Acceptance
 
 Recreation returns to the same profile/session/workspace in a fresh named-profile WebView. Same-origin profiles remain isolated. Renames restore; deletion and credential/origin rotation do not. The saved Bundle contains only the documented identifiers and retry flag. A killed renderer offers Retry and reconnects to the same route with current vault credentials. Unsupported WebView providers still fail closed. Cancelling or leaving a connection does not silently reopen it.
