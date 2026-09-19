@@ -2,6 +2,7 @@ package com.qwen.mobileshell
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -55,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     }
     private var microphoneDialog: AlertDialog? = null
     private var microphoneAuthorized = false
+    private var blockedOpenDocumentLaunches = 0
+    private var blockedCreateDocumentLaunches = 0
     private val microphone: NativeMicrophonePermission by lazy {
         NativeMicrophonePermission(
             { ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED },
@@ -499,6 +502,34 @@ class MainActivity : AppCompatActivity() {
         dismissMicrophoneDialog()
     }
 
+    @Suppress("DEPRECATION")
+    override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
+        val view = webView
+        val profile = activeProfile
+        if (microphoneAuthorized && view != null && profile != null &&
+            intent.action in listOf(Intent.ACTION_OPEN_DOCUMENT, Intent.ACTION_CREATE_DOCUMENT)) {
+            // Finish the launcher's request after it has returned, without opening a doomed picker.
+            val isOpenDocument = intent.action == Intent.ACTION_OPEN_DOCUMENT
+            if (isOpenDocument) blockedOpenDocumentLaunches++ else blockedCreateDocumentLaunches++
+            window.decorView.post {
+                onActivityResult(requestCode, Activity.RESULT_CANCELED, null)
+                if (isOpenDocument) blockedOpenDocumentLaunches-- else blockedCreateDocumentLaunches--
+                if (view !== webView || profile !== activeProfile || isFinishing || isDestroyed) return@post
+                cancelMicrophone()
+                cancelDialog()
+                activeDialog = AlertDialog.Builder(this)
+                    .setTitle(R.string.microphone_files_title)
+                    .setMessage(R.string.microphone_files_reconnect)
+                    .setNegativeButton(R.string.keep_editing, null)
+                    .setPositiveButton(R.string.reconnect) { _, _ ->
+                        if (view === webView && profile === activeProfile) connect(profile, recovery?.navigation ?: ConnectionNavigation.capture(profile.origin, view.url))
+                    }.show()
+            }
+            return
+        }
+        super.startActivityForResult(intent, requestCode, options)
+    }
+
     override fun onStop() {
         cancelMicrophone()
         val profile = activeProfile
@@ -519,8 +550,8 @@ class MainActivity : AppCompatActivity() {
         if (microphoneAuthorized) recovery = recovery?.copy(retryRequired = true)
         recovery?.let { outState.putBundle("connection-recovery", it.toBundle()) }
         outState.putBoolean("microphone-in-flight", microphone.awaitingResult)
-        outState.putBoolean("file-picker-in-flight", filePicker.awaitingResult)
-        outState.putBoolean("downloadPickerPending", downloads.awaitingResult)
+        outState.putBoolean("file-picker-in-flight", filePicker.awaitingResult && blockedOpenDocumentLaunches == 0)
+        outState.putBoolean("downloadPickerPending", downloads.awaitingResult && blockedCreateDocumentLaunches == 0)
         super.onSaveInstanceState(outState)
     }
 }
