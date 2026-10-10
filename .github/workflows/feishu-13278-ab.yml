@@ -1,0 +1,140 @@
+name: Feishu 13278 controlled Linux A-B
+
+on:
+  push:
+    branches: [ci/feishu-13278-ab-20261011]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      PR_HEAD: 1ca7e0a7955f3eabc6f99810f06ded998252d42a
+      INTEGRATED_MAIN: 9a02f40567237ea3003becac4e6fb3b64c893d45
+      CURRENT_MAIN: 9763580b84225b4811bd05c716f1d05b37cfdf9d
+      NODE_OPTIONS: --max-old-space-size=3072
+      NO_COLOR: 'true'
+      QWEN_CI_COVERAGE: ''
+      OPENAI_API_KEY: ''
+      DASHSCOPE_API_KEY: ''
+      QWEN_API_KEY: ''
+      GEMINI_API_KEY: ''
+      QWEN_DEFAULT_AUTH_TYPE: ''
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22.23.3'
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org/
+      - name: Pin trees and record runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/feishu-ab"
+          git fetch --no-tags https://github.com/QwenLM/qwen-code.git "$CURRENT_MAIN"
+          git diff --name-only "$INTEGRATED_MAIN" "$PR_HEAD" > "$RUNNER_TEMP/feishu-ab/changed-files.txt"
+          test "$(cat "$RUNNER_TEMP/feishu-ab/changed-files.txt")" = 'packages/channels/feishu/src/adapter.test.ts'
+          git diff "$INTEGRATED_MAIN" "$PR_HEAD" > "$RUNNER_TEMP/feishu-ab/pr-diff.patch"
+          git diff "$INTEGRATED_MAIN" "$CURRENT_MAIN" -- package.json pnpm-lock.yaml packages/core/src/memory/recall-scan-latency.test.ts packages/core/src/memory/recall.ts packages/core/src/memory/scan.ts packages/core/vitest.config.ts > "$RUNNER_TEMP/feishu-ab/current-main-relevant.patch"
+          { date -u; uname -a; node --version; corepack pnpm --version; lscpu; df -h /var/tmp; } | tee "$RUNNER_TEMP/feishu-ab/runner.txt"
+          echo "TMPDIR=$(mktemp -d /var/tmp/qwen-ab-XXXXXX)" >> "$GITHUB_ENV"
+          git checkout --detach "$PR_HEAD"
+      - name: Install and build identical head-baseline dependency tree
+        run: |
+          corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only
+          npm run build
+          git diff --exit-code
+          sha256sum pnpm-lock.yaml package.json packages/core/package.json packages/core/vitest.config.ts packages/core/src/memory/recall-scan-latency.test.ts > "$RUNNER_TEMP/feishu-ab/head-hashes.txt"
+      - name: Alternate isolated baseline-head latency runs
+        id: isolated
+        continue-on-error: true
+        run: |
+          result=0
+          for arm in base-1 head-1 head-2 base-2; do
+            case "$arm" in base-*) sha="$INTEGRATED_MAIN" ;; head-*) sha="$PR_HEAD" ;; esac
+            git checkout --detach "$sha"
+            test "$(git rev-parse HEAD)" = "$sha"
+            git diff --exit-code
+            sha256sum pnpm-lock.yaml package.json packages/core/package.json packages/core/vitest.config.ts packages/core/src/memory/recall-scan-latency.test.ts > "$RUNNER_TEMP/feishu-ab/$arm-hashes.txt"
+            cmp "$RUNNER_TEMP/feishu-ab/head-hashes.txt" "$RUNNER_TEMP/feishu-ab/$arm-hashes.txt"
+            set +e
+            (cd packages/core && npm run test:ci -- src/memory/recall-scan-latency.test.ts --retry=2 --silent=false) 2>&1 | tee "$RUNNER_TEMP/feishu-ab/$arm-latency.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf '%s %s %s\n' "$arm" "$sha" "$rc" | tee -a "$RUNNER_TEMP/feishu-ab/results.txt"
+            if [ "$rc" -ne 0 ]; then result=1; fi
+          done
+          exit "$result"
+      - name: Full core on integrated main with original worker configuration
+        id: base_core
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          git checkout --detach "$INTEGRATED_MAIN"
+          test "$(git rev-parse HEAD)" = "$INTEGRATED_MAIN"
+          git diff --exit-code
+          set +e
+          (cd packages/core && npm run test:ci -- --retry=2) 2>&1 | tee "$RUNNER_TEMP/feishu-ab/base-core.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf 'base-core %s %s\n' "$INTEGRATED_MAIN" "$rc" | tee -a "$RUNNER_TEMP/feishu-ab/results.txt"
+          cp packages/core/junit.xml "$RUNNER_TEMP/feishu-ab/base-core-junit.xml"
+          exit "$rc"
+      - name: Full core on PR head with original worker configuration
+        id: head_core
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          git checkout --detach "$PR_HEAD"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git diff --exit-code
+          set +e
+          (cd packages/core && npm run test:ci -- --retry=2) 2>&1 | tee "$RUNNER_TEMP/feishu-ab/head-core.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf 'head-core %s %s\n' "$PR_HEAD" "$rc" | tee -a "$RUNNER_TEMP/feishu-ab/results.txt"
+          cp packages/core/junit.xml "$RUNNER_TEMP/feishu-ab/head-core-junit.xml"
+          exit "$rc"
+      - name: Current main with its own frozen install and rebuild
+        id: current
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          git checkout --detach "$CURRENT_MAIN"
+          test "$(git rev-parse HEAD)" = "$CURRENT_MAIN"
+          corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only
+          npm run build
+          git diff --exit-code
+          sha256sum pnpm-lock.yaml package.json packages/core/package.json packages/core/vitest.config.ts packages/core/src/memory/recall-scan-latency.test.ts > "$RUNNER_TEMP/feishu-ab/current-hashes.txt"
+          set +e
+          (cd packages/core && npm run test:ci -- src/memory/recall-scan-latency.test.ts --retry=2 --silent=false) 2>&1 | tee "$RUNNER_TEMP/feishu-ab/current-latency.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf 'current-main %s %s\n' "$CURRENT_MAIN" "$rc" | tee -a "$RUNNER_TEMP/feishu-ab/results.txt"
+          exit "$rc"
+      - name: Upload raw diagnostic results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: feishu-13278-linux-ab
+          path: ${{ runner.temp }}/feishu-ab
+          retention-days: 14
+          if-no-files-found: error
+      - name: Preserve diagnostic failure status
+        if: ${{ always() }}
+        env:
+          ISOLATED: ${{ steps.isolated.outcome }}
+          BASE_CORE: ${{ steps.base_core.outcome }}
+          HEAD_CORE: ${{ steps.head_core.outcome }}
+          CURRENT: ${{ steps.current.outcome }}
+        run: |
+          cat "$RUNNER_TEMP/feishu-ab/results.txt" || true
+          test "$ISOLATED" = success
+          test "$BASE_CORE" = success
+          test "$HEAD_CORE" = success
+          test "$CURRENT" = success
