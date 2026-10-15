@@ -1,0 +1,57 @@
+name: Author Linux comparison - Feishu files
+
+on:
+  push:
+    branches: [validation/feishu-files-20261015]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CI: 'true'
+  QWEN_SKIP_PREPARE: '1'
+
+jobs:
+  package:
+    name: Feishu (${{ matrix.source }})
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: head
+            ref: e5796ed3a07d8c92d46b7d08be10f73ea3c274e5
+          - source: main
+            ref: e612bbf23cea82fd28fe1f51e5e63845b3642ed0
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+      - name: Record exact source
+        run: |
+          mkdir -p "$RUNNER_TEMP/feishu-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/feishu-evidence/source-sha.txt"
+          sha256sum packages/channels/feishu/src/adapter.test.ts packages/channels/feishu/src/FeishuAdapter.ts packages/channels/feishu/src/media.ts > "$RUNNER_TEMP/feishu-evidence/source-files.sha256"
+          node --version
+          corepack pnpm --version
+      - name: Frozen installation
+        run: corepack pnpm install --frozen-lockfile
+      - name: Build workspace dependencies
+        run: npm run build
+      - name: Full Feishu package suite, including POSIX permission cases
+        working-directory: packages/channels/feishu
+        run: node "$GITHUB_WORKSPACE/node_modules/vitest/vitest.mjs" run --reporter=json --outputFile="$RUNNER_TEMP/feishu-evidence/tests.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: feishu-${{ matrix.source }}
+          path: ${{ runner.temp }}/feishu-evidence/
