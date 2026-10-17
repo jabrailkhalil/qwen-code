@@ -1,0 +1,53 @@
+name: Author download integration verification
+
+on:
+  push:
+    branches: [validation/downloads-web-20261018]
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Linux download integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: 28fa6bd79844ce3fd37b2d84f1700eba33634b16
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+      - name: Record exact tested source
+        run: |
+          test "$(git rev-parse HEAD)" = "28fa6bd79844ce3fd37b2d84f1700eba33634b16"
+          mkdir -p "$RUNNER_TEMP/downloads-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/downloads-evidence/source-sha.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/downloads-evidence/source-tree.txt"
+      - name: Frozen installation
+        run: corepack pnpm install --frozen-lockfile
+      - name: Full workspace build
+        run: npm run build
+      - name: Affected web regression suites and bundle guards
+        working-directory: packages/web-shell
+        run: node "$GITHUB_WORKSPACE/node_modules/vitest/vitest.mjs" run client/build-artifact.test.ts client/components/SessionOverviewPanel.test.tsx client/utils/saveBlob.test.ts client/components/artifacts/ArtifactPanel.test.tsx client/components/artifacts/artifactUtils.test.ts client/components/messages/WorkflowExecutionView.test.tsx client/components/sidebar/StandaloneRecents.test.tsx client/components/sidebar/WebShellSidebar.workspace-removal.test.tsx --reporter=json --outputFile="$RUNNER_TEMP/downloads-evidence/web-tests.json"
+      - name: Full workspace typecheck
+        run: npm run typecheck
+      - name: Full workspace lint without warnings
+        run: npm run lint:ci
+      - name: Repository formatting check
+        run: corepack pnpm exec node scripts/lint.js --prettier
+      - name: Startup bundle
+        run: npm run bundle
+      - name: Check clean tracked source
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: linux-downloads-current-head
+          path: ${{ runner.temp }}/downloads-evidence/
