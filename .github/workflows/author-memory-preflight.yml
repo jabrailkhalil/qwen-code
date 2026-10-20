@@ -1,0 +1,35 @@
+name: Memory fix full preflight
+on:
+  push:
+    branches: [ci/memory-index-14877-preflight]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      QWEN_SKIP_PREPARE: '1'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: corepack enable
+      - name: Full repository preflight
+        shell: bash
+        run: |
+          mkdir -p /tmp/memory-preflight-evidence
+          npm run preflight 2>&1 | tee /tmp/memory-preflight-evidence/preflight.log
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-full-preflight
+          path: /tmp/memory-preflight-evidence/
+          if-no-files-found: warn
