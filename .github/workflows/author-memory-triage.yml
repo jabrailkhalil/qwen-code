@@ -1,0 +1,59 @@
+name: Memory fix preflight failure comparison
+on:
+  push:
+    branches: [ci/memory-index-14877-triage]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  web-shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: base
+            ref: 6ca2c0bd522de37c865783d7baa616e5ac31ff65
+          - label: head
+            ref: 448b3431fd63fdb122e9a2d5a601d25d4497f3ad
+    env:
+      QWEN_SKIP_PREPARE: '1'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Record exact source and frozen dependencies
+        run: |
+          mkdir -p triage
+          git rev-parse HEAD | tee triage/source-sha.txt
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+      - name: Build exact source
+        id: build
+        run: npm run build
+      - name: Unmodified full Web Shell suite
+        working-directory: packages/web-shell
+        shell: bash
+        run: |
+          npm run test:ci -- --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/triage/web-shell.json" 2>&1 | tee "$GITHUB_WORKSPACE/triage/web-shell.log"
+      - name: Remaining preflight script tests on head
+        if: always() && matrix.label == 'head' && steps.build.outcome == 'success'
+        shell: bash
+        run: npm run test:scripts 2>&1 | tee triage/scripts.log
+      - name: Remaining preflight fast-path check on head
+        if: always() && matrix.label == 'head' && steps.build.outcome == 'success'
+        shell: bash
+        run: npm run check:serve-fast-path-bundle 2>&1 | tee triage/fast-path.log
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-preflight-triage-${{ matrix.label }}
+          path: triage/
+          if-no-files-found: warn
