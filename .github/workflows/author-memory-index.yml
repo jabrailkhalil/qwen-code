@@ -52,7 +52,7 @@ jobs:
           set -e
           cd ../..
           test "$result" -ne 0
-          node --input-type=module -e "import fs from 'node:fs'; import assert from 'node:assert/strict'; const r=JSON.parse(fs.readFileSync('evidence/baseline.json')); assert.equal(r.numTotalTests,10); assert.equal(r.numPassedTests,2); assert.equal(r.numFailedTests,8); assert.equal(r.numRuntimeErrorTestSuites ?? 0,0); console.log('Confirmed: 8 regression assertions fail; 2 controls pass on original sources.');"
+          node --input-type=module -e "import fs from 'node:fs'; import assert from 'node:assert/strict'; const r=JSON.parse(fs.readFileSync('evidence/baseline.json')); assert.equal(r.numTotalTests,12); assert.equal(r.numPassedTests,2); assert.equal(r.numFailedTests,10); assert.equal(r.numRuntimeErrorTestSuites ?? 0,0); console.log('Confirmed: 10 regression assertions fail; 2 controls pass on original sources.');"
           restore_sources
           trap - EXIT
       - name: Full memory suite on fixed sources
