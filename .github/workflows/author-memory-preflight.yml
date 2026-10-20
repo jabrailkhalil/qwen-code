@@ -21,6 +21,8 @@ jobs:
         with:
           node-version: '22'
       - run: corepack enable
+      - name: Bootstrap dependencies needed by the clean script
+        run: corepack pnpm install --frozen-lockfile
       - name: Full repository preflight
         shell: bash
         run: |
