@@ -1,0 +1,78 @@
+name: Memory PR browser failure comparison
+on:
+  push:
+    branches: [ci/memory-web-smoke-oct21]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: base
+            repository: QwenLM/qwen-code
+            revision: 13a4fea51683a6baacbde7f5a3330bfab6804827
+          - label: head
+            repository: jabrailkhalil/qwen-code
+            revision: d115d1efaa86602a7e8f6e14905c964674ab8ea9
+          - label: main
+            repository: QwenLM/qwen-code
+            revision: 79242671bb13184166aa09418a9e05d616afd90c
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Record exact source and unchanged browser settings
+        shell: bash
+        run: |
+          mkdir -p /tmp/memory-web-smoke-evidence
+          test "$(git rev-parse HEAD)" = '${{ matrix.revision }}'
+          git rev-parse HEAD | tee /tmp/memory-web-smoke-evidence/source-head.txt
+          git status --porcelain=v1 | tee /tmp/memory-web-smoke-evidence/initial-status.txt
+          git hash-object packages/web-shell/playwright.config.ts packages/web-shell/client/e2e/managed-ssh-workspace-registration.spec.ts packages/web-shell/client/e2e/web-shell.message-deletion.spec.ts | tee /tmp/memory-web-smoke-evidence/input-blobs.txt
+          git show HEAD:packages/web-shell/playwright.config.ts > /tmp/memory-web-smoke-evidence/playwright.config.ts
+      - name: Frozen dependencies and repository preparation
+        shell: bash
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile --reporter=append-only 2>&1 | tee /tmp/memory-web-smoke-evidence/install.log
+      - name: Install Chromium with upstream browser package
+        shell: bash
+        run: |
+          node node_modules/playwright/cli.js install --with-deps chromium
+          nested_cli='node_modules/@playwright/test/node_modules/playwright/cli.js'
+          if [ -f "$nested_cli" ]; then
+            node "$nested_cli" install chromium
+          fi
+      - name: Choose isolated Playwright port
+        shell: bash
+        run: |
+          port="$(node -e "const net=require('node:net');const server=net.createServer();server.listen(0,'127.0.0.1',()=>{console.log(server.address().port);server.close();});")"
+          echo "PLAYWRIGHT_PORT=${port}" >> "$GITHUB_ENV"
+      - name: Run the three unchanged failing Chromium cases
+        shell: bash
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: /tmp/memory-web-smoke-evidence/results.json
+        run: |
+          npm exec --workspace=packages/web-shell -- playwright test --config playwright.config.ts client/e2e/managed-ssh-workspace-registration.spec.ts client/e2e/web-shell.message-deletion.spec.ts --project=chromium --workers=2 --grep 'Managed remote Workspace registration preserves its request|message actions use a hoverable menu' --reporter=line,json 2>&1 | tee /tmp/memory-web-smoke-evidence/tests.log
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-web-smoke-${{ matrix.label }}
+          path: |
+            /tmp/memory-web-smoke-evidence/
+            packages/web-shell/client/e2e/test-results/
+          if-no-files-found: warn
