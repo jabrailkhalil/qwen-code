@@ -1,0 +1,97 @@
+name: Memory index review follow-up validation
+on:
+  push:
+    branches: [ci/memory-index-review-oct21]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  QWEN_SKIP_PREPARE: '1'
+  CI: 'true'
+jobs:
+  memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Frozen install
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+      - name: Build and bundle
+        run: npm run build && npm run bundle
+      - name: Repository typecheck
+        run: npm run typecheck
+      - name: Changed-file formatting and lint
+        run: |
+          corepack pnpm exec prettier --check docs/design/memory-index-omission-notice.md docs/design/memory-index-omission-notice.zh-CN.md docs/users/features/memory.md packages/core/src/memory/index-budget.ts packages/core/src/memory/index-drop-notice.test.ts packages/core/src/memory/indexer.ts packages/core/src/memory/prompt.ts packages/core/src/memory/prompt.test.ts packages/core/src/memory/structured-scan.ts
+          corepack pnpm exec eslint packages/core/src/memory/index-budget.ts packages/core/src/memory/index-drop-notice.test.ts packages/core/src/memory/indexer.ts packages/core/src/memory/prompt.ts packages/core/src/memory/prompt.test.ts packages/core/src/memory/structured-scan.ts --max-warnings 0
+      - name: Review negative control on previous PR source
+        shell: bash
+        run: |
+          mkdir -p evidence
+          fixed_head=$(git rev-parse HEAD)
+          source_files=(packages/core/src/memory/index-budget.ts packages/core/src/memory/indexer.ts packages/core/src/memory/prompt.ts packages/core/src/memory/structured-scan.ts)
+          restore_sources() {
+            git restore --source="$fixed_head" --worktree -- "${source_files[@]}"
+          }
+          trap restore_sources EXIT
+          git restore --source=448b3431fd63fdb122e9a2d5a601d25d4497f3ad --worktree -- "${source_files[@]}"
+          cd packages/core
+          set +e
+          corepack pnpm exec vitest run src/memory/index-drop-notice.test.ts --coverage.enabled=false --maxWorkers=2 --minWorkers=1 --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/evidence/review-baseline.json" 2>&1 | tee "$GITHUB_WORKSPACE/evidence/review-baseline.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          cd ../..
+          test "$result" -ne 0
+          node --input-type=module -e "import fs from 'node:fs'; import assert from 'node:assert/strict'; const r=JSON.parse(fs.readFileSync('evidence/review-baseline.json')); assert.equal(r.numTotalTests,17); assert.equal(r.numPassedTests,9); assert.equal(r.numFailedTests,8); assert.equal(r.numRuntimeErrorTestSuites ?? 0,0); console.log('Confirmed: eight review regression assertions fail; nine controls pass on prior PR source.');"
+          restore_sources
+          trap - EXIT
+      - name: Full memory suite on fixed source
+        working-directory: packages/core
+        run: corepack pnpm exec vitest run src/memory --coverage.enabled=false --maxWorkers=2 --minWorkers=1 --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/evidence/fixed-memory.json"
+      - name: Built CLI smoke without provider credentials
+        run: |
+          export QWEN_HOME="$(mktemp -d)"
+          export QWEN_RUNTIME_DIR="$(mktemp -d)"
+          node dist/cli.js --version
+          node dist/cli.js --help
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-review-oct21
+          path: evidence/
+          if-no-files-found: warn
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Bootstrap dependencies required by clean
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+      - name: Full repository preflight
+        shell: bash
+        run: |
+          mkdir -p /tmp/memory-review-preflight
+          npm run preflight 2>&1 | tee /tmp/memory-review-preflight/preflight.log
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-review-preflight-oct21
+          path: /tmp/memory-review-preflight/
+          if-no-files-found: warn
