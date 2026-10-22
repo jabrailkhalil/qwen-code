@@ -1,0 +1,68 @@
+name: Memory diagnostic review validation
+on:
+  push:
+    branches: [ci/memory-index-review-oct22]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CI: 'true'
+  QWEN_SKIP_PREPARE: '1'
+jobs:
+  memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preserve separate diagnostic harness
+        run: cp .github/scripts/author-memory-review-oct22.mjs /tmp/author-memory-review-oct22.mjs
+      - uses: actions/checkout@v4
+        with:
+          ref: 0ff2926534c784b11ba28ccee8cb8a898cc5bccc
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin exact product source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = '0ff2926534c784b11ba28ccee8cb8a898cc5bccc'
+          mkdir -p evidence
+          git rev-parse HEAD | tee evidence/source-head.txt
+          git status --porcelain=v1 --untracked-files=no | tee evidence/initial-tracked-status.txt
+      - name: Frozen install
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+      - name: Build and bundle
+        run: npm run build && npm run bundle
+      - name: Repository typecheck
+        run: npm run typecheck
+      - name: Changed-file formatting and lint
+        run: |
+          corepack pnpm exec prettier --check docs/design/memory-index-omission-notice.md docs/design/memory-index-omission-notice.zh-CN.md docs/users/features/memory.md packages/core/src/memory/index-budget.ts packages/core/src/memory/index-drop-notice.test.ts packages/core/src/memory/indexer.ts packages/core/src/memory/prompt.ts packages/core/src/memory/prompt.test.ts packages/core/src/memory/structured-scan.ts packages/core/src/memory/structured-scan.test.ts
+          corepack pnpm exec eslint packages/core/src/memory/index-budget.ts packages/core/src/memory/index-drop-notice.test.ts packages/core/src/memory/indexer.ts packages/core/src/memory/prompt.ts packages/core/src/memory/prompt.test.ts packages/core/src/memory/structured-scan.ts packages/core/src/memory/structured-scan.test.ts --max-warnings 0
+      - name: Previous-head and mutation controls
+        run: node /tmp/author-memory-review-oct22.mjs
+      - name: Full memory suite on restored fixed source
+        working-directory: packages/core
+        run: corepack pnpm exec vitest run src/memory --coverage.enabled=false --maxWorkers=2 --minWorkers=1 --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/evidence/fixed-memory.json"
+      - name: Built CLI version and help
+        run: |
+          export QWEN_RUNTIME_DIR="$(mktemp -d)"
+          node dist/cli.js --version
+          node dist/cli.js --help
+      - name: Upstream startup bundle closure gate
+        run: npm run check:serve-fast-path-bundle
+      - name: Restored tracked source is clean
+        run: git diff --exit-code
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-review-oct22
+          path: evidence/
+          if-no-files-found: warn
