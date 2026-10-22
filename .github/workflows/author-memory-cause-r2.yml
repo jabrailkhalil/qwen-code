@@ -1,0 +1,70 @@
+name: Memory cause regression validation
+on:
+  push:
+    branches: [ci/memory-cause-r2-main-oct22]
+permissions:
+  contents: read
+env:
+  CI: 'true'
+  QWEN_SKIP_PREPARE: '1'
+jobs:
+  memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preserve independent validation harness
+        run: |
+          cp .github/scripts/memory-cause-controls.mjs /tmp/memory-cause-controls.mjs
+          cp .github/scripts/verify-memory-cause.mjs /tmp/verify-memory-cause.mjs
+      - uses: actions/checkout@v4
+        with:
+          ref: 1d595e2fd38088a9c5bd354f9e48c22a96064f82
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify exact source
+        run: |
+          test "$(git rev-parse HEAD)" = '1d595e2fd38088a9c5bd354f9e48c22a96064f82'
+          git diff --exit-code
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-head.txt
+          node --version > evidence/node-version.txt
+      - name: Frozen dependency installation
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+      - name: Build and bundle
+        run: npm run build && npm run bundle
+      - name: Repository typecheck
+        run: npm run typecheck
+      - name: Changed-file formatting and lint
+        run: |
+          corepack pnpm exec prettier --check docs/design/memory-index-omission-notice.md docs/design/memory-index-omission-notice.zh-CN.md packages/core/src/memory/indexer.ts packages/core/src/memory/index-drop-notice.test.ts
+          corepack pnpm exec eslint packages/core/src/memory/indexer.ts packages/core/src/memory/index-drop-notice.test.ts --max-warnings 0
+      - name: Full memory suite on fixed source
+        working-directory: packages/core
+        run: corepack pnpm exec vitest run src/memory --coverage.enabled=false --maxWorkers=2 --minWorkers=1 --reporter=default --reporter=json --outputFile.json="$GITHUB_WORKSPACE/evidence/fixed-memory.json"
+      - name: Source-revert and causal predicate mutation controls
+        run: node /tmp/memory-cause-controls.mjs
+      - name: Independent built-output filesystem verification
+        run: node /tmp/verify-memory-cause.mjs --repo "$PWD" --out "$PWD/evidence/built-output" --expected-head 1d595e2fd38088a9c5bd354f9e48c22a96064f82
+      - name: Built CLI version and help
+        run: |
+          export QWEN_RUNTIME_DIR="$(mktemp -d)"
+          node dist/cli.js --version
+          node dist/cli.js --help
+      - name: Upstream startup bundle closure check
+        run: npm run check:serve-fast-path-bundle
+      - name: Restored tracked source is clean
+        run: git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: memory-cause-r2-evidence
+          path: evidence/
+          if-no-files-found: error
