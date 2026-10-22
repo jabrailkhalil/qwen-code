@@ -15,13 +15,13 @@ jobs:
         include:
           - label: base
             repository: QwenLM/qwen-code
-            revision: 13a4fea51683a6baacbde7f5a3330bfab6804827
+            revision: 8a9ae631a3f396f76e166c341a896e300d843e4c
           - label: head
             repository: jabrailkhalil/qwen-code
-            revision: d115d1efaa86602a7e8f6e14905c964674ab8ea9
+            revision: 5f93cd5dcba82673f5e08421adeda62cdc6d0288
           - label: main
             repository: QwenLM/qwen-code
-            revision: 79242671bb13184166aa09418a9e05d616afd90c
+            revision: 952c6de739369156e1240a7e1ce1bc5cd4723ee7
     env:
       CI: 'true'
     steps:
@@ -41,7 +41,9 @@ jobs:
           test "$(git rev-parse HEAD)" = '${{ matrix.revision }}'
           git rev-parse HEAD | tee /tmp/memory-web-smoke-evidence/source-head.txt
           git status --porcelain=v1 | tee /tmp/memory-web-smoke-evidence/initial-status.txt
-          git hash-object packages/web-shell/playwright.config.ts packages/web-shell/client/e2e/managed-ssh-workspace-registration.spec.ts packages/web-shell/client/e2e/web-shell.message-deletion.spec.ts | tee /tmp/memory-web-smoke-evidence/input-blobs.txt
+          test ! -s /tmp/memory-web-smoke-evidence/initial-status.txt
+          git hash-object packages/web-shell/playwright.config.ts packages/web-shell/client/e2e/web-shell.message-deletion.spec.ts package.json pnpm-lock.yaml | tee /tmp/memory-web-smoke-evidence/input-blobs.txt
+          git rev-parse HEAD:packages/web-shell | tee /tmp/memory-web-smoke-evidence/web-shell-tree.txt
           git show HEAD:packages/web-shell/playwright.config.ts > /tmp/memory-web-smoke-evidence/playwright.config.ts
       - name: Frozen dependencies and repository preparation
         shell: bash
@@ -61,12 +63,12 @@ jobs:
         run: |
           port="$(node -e "const net=require('node:net');const server=net.createServer();server.listen(0,'127.0.0.1',()=>{console.log(server.address().port);server.close();});")"
           echo "PLAYWRIGHT_PORT=${port}" >> "$GITHUB_ENV"
-      - name: Run the three unchanged failing Chromium cases
+      - name: Run the unchanged failing Chromium hover case
         shell: bash
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: /tmp/memory-web-smoke-evidence/results.json
         run: |
-          npm exec --workspace=packages/web-shell -- playwright test --config playwright.config.ts client/e2e/managed-ssh-workspace-registration.spec.ts client/e2e/web-shell.message-deletion.spec.ts --project=chromium --workers=2 --grep 'Managed remote Workspace registration preserves its request|message actions use a hoverable menu' --reporter=line,json 2>&1 | tee /tmp/memory-web-smoke-evidence/tests.log
+          npm exec --workspace=packages/web-shell -- playwright test --config playwright.config.ts client/e2e/web-shell.message-deletion.spec.ts --project=chromium --workers=2 --grep 'message actions use a hoverable menu' --reporter=line,json 2>&1 | tee /tmp/memory-web-smoke-evidence/tests.log
       - name: Evidence
         if: always()
         uses: actions/upload-artifact@v4
