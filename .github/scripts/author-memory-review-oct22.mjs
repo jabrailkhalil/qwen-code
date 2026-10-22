@@ -29,7 +29,14 @@ function replaceOnce(file, before, after) {
   assert.equal(content.split(before).length - 1, 1, `unique mutation: ${file}`);
   fs.writeFileSync(file, content.replace(before, after));
 }
-function expectAssertions(label, testFile, pattern, failed, passed) {
+function expectAssertions(
+  label,
+  testFile,
+  pattern,
+  failed,
+  passed,
+  assertionPattern = /AssertionError|Error: expect/,
+) {
   const reportFile = path.join(evidence, `${label}.json`);
   const run = spawnSync(
     'corepack',
@@ -81,9 +88,7 @@ function expectAssertions(label, testFile, pattern, failed, passed) {
   );
   assert(
     failures.every((test) =>
-      test.failureMessages.some((message) =>
-        /AssertionError|Error: expect/.test(message),
-      ),
+      test.failureMessages.some((message) => assertionPattern.test(message)),
     ),
   );
   const summary = {
@@ -172,6 +177,8 @@ try {
       pattern: 'refuses a symlinked team memory root',
       failed: 1,
       passed: 0,
+      assertionPattern:
+        /^Error: promise resolved "[^\n]*" instead of rejecting\n\s+at Assertion\.__VITEST_REJECTS__[\s\S]*\/src\/memory\/structured-scan\.test\.ts:807:5(?:\n|$)/,
     },
   ];
   for (const mutation of mutations) {
@@ -183,6 +190,7 @@ try {
         mutation.pattern,
         mutation.failed,
         mutation.passed,
+        mutation.assertionPattern,
       );
     } finally {
       restore();
