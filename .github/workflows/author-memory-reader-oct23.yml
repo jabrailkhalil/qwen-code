@@ -12,14 +12,13 @@ jobs:
   reader:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      EVIDENCE_DIR: ${{ runner.temp }}/memory-reader-evidence
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
       - name: Preserve verification harness
         run: |
+          echo "EVIDENCE_DIR=$RUNNER_TEMP/memory-reader-evidence" >> "$GITHUB_ENV"
           cp .github/scripts/reader-controls.mjs "$RUNNER_TEMP/reader-controls.mjs"
           cp .github/scripts/verify-reader-advice.cjs "$RUNNER_TEMP/verify-reader-advice.cjs"
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
