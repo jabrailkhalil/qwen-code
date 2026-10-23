@@ -1,5 +1,6 @@
 name: Reader advice validation October 23
 on:
+  workflow_dispatch:
   push:
     branches: [ci/memory-reader-advice-oct23]
 permissions:
