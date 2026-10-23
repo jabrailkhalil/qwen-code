@@ -26,11 +26,13 @@ function run(name, contents, expectedFailures, expectedName) {
   fs.writeFileSync(path.join(evidence, `${name}.log`), (result.stdout || '') + (result.stderr || ''));
   assert.equal(result.status, 1, 'Negative control must fail test assertions');
   const report = JSON.parse(fs.readFileSync(output, 'utf8'));
+  assert.equal(report.numTotalTests, 53);
   assert.equal(report.numFailedTests, expectedFailures);
   assert.equal(report.numPassedTests, 53 - expectedFailures);
   assert.equal(report.numPendingTests, 0);
   const failures = report.testResults.flatMap(file => file.assertionResults).filter(test => test.status === 'failed');
   assert.equal(failures.length, expectedFailures);
+  assert(failures.every(test => test.failureMessages.every(message => message.includes('AssertionError'))));
   if (expectedName) assert(failures.some(test => test.fullName.includes(expectedName)));
   cases.push({ name, passed: report.numPassedTests, failed: report.numFailedTests, failures: failures.map(test => test.fullName) });
 }
@@ -42,7 +44,7 @@ try {
     'const overlongEntriesCauseOverflow = false;',
   );
   assert.notEqual(mutant, original.toString());
-  run('disabled-length-cause-control', mutant, 1, 'keeps blaming entry length');
+  run('disabled-length-cause-control', mutant, 4, 'keeps blaming entry length');
 } finally {
   fs.writeFileSync(source, original);
 }
