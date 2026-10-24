@@ -1,8 +1,7 @@
 name: Author Android verification
 
 on:
-  push:
-    branches: [validation/android-downloads-20261024]
+  workflow_dispatch:
 
 permissions:
   contents: read
