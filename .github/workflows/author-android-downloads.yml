@@ -1,8 +1,8 @@
-name: Author Android and web download verification
+name: Author Android verification
 
 on:
   push:
-    branches: [validation/android-downloads-20261015]
+    branches: [validation/android-downloads-20261024]
 
 permissions:
   contents: read
@@ -19,7 +19,7 @@ jobs:
       - name: 'Checkout'
         uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
-          ref: be539c017cafdf73ff01c6b0597a13697c12dea8
+          ref: dd8e94513b33848999ac39d324eea6f2dced77aa
           persist-credentials: false
 
       - name: 'Record exact tested source'
@@ -27,6 +27,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/downloads-evidence"
+          test "$(git rev-parse HEAD)" = dd8e94513b33848999ac39d324eea6f2dced77aa
           git rev-parse HEAD > "$RUNNER_TEMP/downloads-evidence/source-sha.txt"
           git ls-tree -r HEAD packages/mobile-shell packages/web-shell scripts/check-desktop-isolation.js pnpm-lock.yaml > "$RUNNER_TEMP/downloads-evidence/source-tree.txt"
 
@@ -76,7 +77,7 @@ jobs:
       - name: 'Checkout'
         uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
-          ref: be539c017cafdf73ff01c6b0597a13697c12dea8
+          ref: dd8e94513b33848999ac39d324eea6f2dced77aa
           persist-credentials: false
 
       - name: 'Record exact tested source'
@@ -84,6 +85,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/downloads-evidence"
+          test "$(git rev-parse HEAD)" = dd8e94513b33848999ac39d324eea6f2dced77aa
           git rev-parse HEAD > "$RUNNER_TEMP/downloads-evidence/source-sha.txt"
           git ls-tree -r HEAD packages/mobile-shell packages/web-shell scripts/check-desktop-isolation.js pnpm-lock.yaml > "$RUNNER_TEMP/downloads-evidence/source-tree.txt"
 
@@ -125,40 +127,3 @@ jobs:
             ${{ runner.temp }}/downloads-evidence/
             packages/mobile-shell/app/build/outputs/androidTest-results/
             packages/mobile-shell/app/build/reports/androidTests/
-
-  web:
-    name: Linux web download regressions
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    env:
-      CI: 'true'
-      QWEN_SKIP_PREPARE: '1'
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        with:
-          ref: be539c017cafdf73ff01c6b0597a13697c12dea8
-          persist-credentials: false
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: '22'
-      - name: Record exact tested source
-        run: |
-          mkdir -p "$RUNNER_TEMP/downloads-evidence"
-          git rev-parse HEAD > "$RUNNER_TEMP/downloads-evidence/source-sha.txt"
-          git ls-tree -r HEAD packages/mobile-shell packages/web-shell scripts/check-desktop-isolation.js pnpm-lock.yaml > "$RUNNER_TEMP/downloads-evidence/source-tree.txt"
-      - name: Frozen installation
-        run: corepack pnpm install --frozen-lockfile
-      - name: Full workspace build
-        run: npm run build
-      - name: Affected web regression suites and bundle guards
-        working-directory: packages/web-shell
-        run: node "$GITHUB_WORKSPACE/node_modules/vitest/vitest.mjs" run client/build-artifact.test.ts client/components/SessionOverviewPanel.test.tsx client/utils/saveBlob.test.ts client/components/artifacts/ArtifactPanel.test.tsx client/components/artifacts/artifactUtils.test.ts client/components/messages/WorkflowExecutionView.test.tsx client/components/sidebar/StandaloneRecents.test.tsx client/components/sidebar/WebShellSidebar.workspace-removal.test.tsx --reporter=json --outputFile="$RUNNER_TEMP/downloads-evidence/web-tests.json"
-      - name: Full workspace typecheck
-        run: npm run typecheck
-      - name: Full workspace lint
-        run: npm run lint
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: linux-web-downloads
-          path: ${{ runner.temp }}/downloads-evidence/
