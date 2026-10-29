@@ -71,7 +71,7 @@ jobs:
             cp -a source/packages/mobile-shell/app/build/reports/androidTests evidence/
           fi
           python3 harness/validation/record-device-results.py evidence
-      - uses: 'actions/upload-artifact@b0e7bd04a817b4e438a8941e9ca92e969edfac0d' # v4.7.1
+      - uses: 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9' # v7.0.2
         if: always()
         with:
           name: 'reviewed-dd8e9451-api26'
