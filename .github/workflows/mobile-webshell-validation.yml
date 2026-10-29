@@ -1,0 +1,59 @@
+name: Mobile export current-main WebShell verification
+on:
+  push:
+    branches: [validation/mobile-webshell-ci-20261029]
+permissions:
+  contents: read
+jobs:
+  webshell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 291b16903e2313d6ea2938f611dd9ca7dcaab556
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Pinned source and mobile evidence identity
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mobile-webshell-results
+          test "$(git rev-parse HEAD)" = 291b16903e2313d6ea2938f611dd9ca7dcaab556
+          test "$(git rev-parse HEAD:packages/mobile-shell)" = 5e23f5ced78fed652270f090f09de3360ea6d091
+          git log -1 --format=fuller > /tmp/mobile-webshell-results/source.txt
+          git rev-parse HEAD:packages/mobile-shell >> /tmp/mobile-webshell-results/source.txt
+          node --version >> /tmp/mobile-webshell-results/source.txt
+          corepack pnpm --version >> /tmp/mobile-webshell-results/source.txt
+      - name: Install frozen dependency tree
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Build all TypeScript workspaces
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/mobile-webshell-results/build.log
+      - name: Full workspace and integration typecheck
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee /tmp/mobile-webshell-results/typecheck.log
+      - name: Changed WebShell lint and formatting
+        run: |
+          set -euo pipefail
+          files=(packages/web-shell/client/utils/saveBlob.ts packages/web-shell/client/utils/saveBlob.test.ts packages/web-shell/client/components/SessionOverviewPanel.tsx packages/web-shell/client/components/artifacts/ArtifactPanel.tsx packages/web-shell/client/components/artifacts/artifactUtils.ts packages/web-shell/client/components/messages/WorkflowExecutionView.tsx packages/web-shell/client/components/sidebar/StandaloneRecents.tsx packages/web-shell/client/components/sidebar/StandaloneRecents.test.tsx packages/web-shell/client/components/sidebar/WebShellSidebar.tsx packages/web-shell/client/components/sidebar/WebShellSidebar.workspace-removal.test.tsx)
+          npx eslint "${files[@]}" --max-warnings 0
+          npx prettier --experimental-cli --check "${files[@]}"
+      - name: Affected WebShell suites
+        working-directory: packages/web-shell
+        run: |
+          set -o pipefail
+          npx vitest run client/utils/saveBlob.test.ts client/components/artifacts client/components/sidebar client/components/SessionOverviewPanel.test.tsx client/components/messages/WorkflowExecutionView.test.tsx --reporter=default --reporter=json --outputFile=/tmp/mobile-webshell-results/tests.json 2>&1 | tee /tmp/mobile-webshell-results/tests.log
+      - name: Tracked source unchanged
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: mobile-webshell-results
+          path: /tmp/mobile-webshell-results
