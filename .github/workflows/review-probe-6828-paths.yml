@@ -1,0 +1,54 @@
+name: Verify strengthened review path controls
+on:
+  push:
+    branches: [validation/review-probe-6828-paths-20261029]
+permissions:
+  contents: read
+jobs:
+  final-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Record exact final unit source and unchanged production
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/review-probe-6828-final-unit
+          git rev-parse HEAD > /tmp/review-probe-6828-final-unit/source.txt
+          git diff --exit-code be322861cadd08d6b485e6de7e189e2cb68497aa HEAD -- packages/cli/src/commands/review/test-efficacy.ts packages/cli/src/commands/review/test-efficacy.test.ts
+          test "$(git rev-parse HEAD:packages/cli/src/commands/review/test-efficacy.ts)" = cb246219aa7ec96633280a0ae27db9933d46e378
+          git rev-parse HEAD:packages/cli/src/commands/review/test-efficacy.test.ts >> /tmp/review-probe-6828-final-unit/source.txt
+          node --version >> /tmp/review-probe-6828-final-unit/source.txt
+      - name: Frozen dependencies
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Required workspace prerequisites for the final unit file
+        run: npm run build
+      - name: Strict final unit lint and formatting
+        run: |
+          npx eslint packages/cli/src/commands/review/test-efficacy.test.ts --max-warnings 0
+          npx prettier --experimental-cli --check packages/cli/src/commands/review/test-efficacy.test.ts
+      - name: Strengthened final unit file
+        working-directory: packages/cli
+        run: |
+          set -o pipefail
+          npx vitest run src/commands/review/test-efficacy.test.ts --reporter=default --reporter=json --outputFile=/tmp/review-probe-6828-final-unit/tests.json 2>&1 | tee /tmp/review-probe-6828-final-unit/tests.log
+      - name: Prove POSIX case, separator, and suffix controls still gate
+        if: always()
+        run: node .github/scripts/review-probe-6828-path-controls.mjs
+      - name: Tracked source unchanged after restoring each mutation
+        if: always()
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-final-unit
+          path: /tmp/review-probe-6828-final-unit
