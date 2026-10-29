@@ -1,0 +1,80 @@
+name: Current-main Feishu draft verification
+on:
+  push:
+    branches: [validation/feishu-ci-20261029]
+permissions:
+  contents: read
+jobs:
+  feishu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 37908430845eecc6e99e4abbed380f62fa915edf
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Exact source and unchanged Feishu inputs
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/feishu-draft-results
+          test "$(git rev-parse HEAD)" = 37908430845eecc6e99e4abbed380f62fa915edf
+          test "$(git rev-parse HEAD:packages/channels/feishu/src)" = 203402dc984090ab95be54e5fee78d5f73d49078
+          git log -1 --format=fuller > /tmp/feishu-draft-results/source.txt
+          git rev-parse HEAD:packages/channels/feishu/src >> /tmp/feishu-draft-results/source.txt
+          node --version >> /tmp/feishu-draft-results/source.txt
+          corepack pnpm --version >> /tmp/feishu-draft-results/source.txt
+      - name: Frozen dependency install
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Full workspace build
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/feishu-draft-results/build.log
+      - name: Workspace and integration typecheck
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee /tmp/feishu-draft-results/typecheck.log
+      - name: Strict changed-test lint and format
+        run: |
+          npx eslint packages/channels/feishu/src/adapter.test.ts packages/channels/feishu/src/inbound-file-store.test.ts --max-warnings 0
+          npx prettier --experimental-cli --check packages/channels/feishu/src/adapter.test.ts packages/channels/feishu/src/inbound-file-store.test.ts
+      - name: Entire Feishu package
+        working-directory: packages/channels/feishu
+        run: |
+          set -o pipefail
+          npx vitest run --reporter=default --reporter=json --outputFile=/tmp/feishu-draft-results/tests.json 2>&1 | tee /tmp/feishu-draft-results/tests.log
+      - name: Scoped rollback mutation must fail the peer-isolation assertion
+        working-directory: packages/channels/feishu
+        run: |
+          set -euo pipefail
+          cp src/FeishuAdapter.ts /tmp/feishu-draft-results/FeishuAdapter.original.ts
+          trap 'cp /tmp/feishu-draft-results/FeishuAdapter.original.ts src/FeishuAdapter.ts' EXIT
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/FeishuAdapter.ts')
+          text = p.read_text()
+          old = 'this.seenMessages.delete(msgId);'
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, 'this.seenMessages.clear();'))
+          PY
+          set +e
+          npx vitest run src/adapter.test.ts -t 'cleans up after dispatch rejects without clearing another message dedup entry' --reporter=default --reporter=json --outputFile=/tmp/feishu-draft-results/negative-control.json > /tmp/feishu-draft-results/negative-control.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/feishu-draft-results/negative-control.log
+          test "$code" -ne 0
+          node -e 'const r=require("/tmp/feishu-draft-results/negative-control.json");const bad=r.testResults.flatMap(t=>t.assertionResults).filter(t=>t.status==="failed");if(bad.length!==1||!bad[0].fullName.includes("without clearing another message dedup entry")||!bad[0].failureMessages.join("\n").includes("expected false to be true"))process.exit(1);'
+          cp /tmp/feishu-draft-results/FeishuAdapter.original.ts src/FeishuAdapter.ts
+          trap - EXIT
+      - name: Tracked source unchanged after build and mutation restoration
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: feishu-draft-results
+          path: /tmp/feishu-draft-results
