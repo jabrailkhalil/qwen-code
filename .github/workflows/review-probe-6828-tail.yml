@@ -1,0 +1,180 @@
+name: Focused Vite A-B and remaining review gates
+on:
+  push:
+    branches: [validation/review-probe-6828-tail-20261029]
+permissions:
+  contents: read
+jobs:
+  vite-config:
+    name: Vite config on ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: latest-main
+            repository: QwenLM/qwen-code
+            ref: 68f181b88575308820cd62acdfb42e5055fd1d6d
+          - label: final-candidate
+            repository: jabrailkhalil/qwen-code
+            ref: be322861cadd08d6b485e6de7e189e2cb68497aa
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      TASK_RESULTS: /tmp/review-probe-6828-vite-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - name: Record exact source and unchanged Vite inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "$TASK_RESULTS"
+          test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
+          git log -1 --format=fuller > "$TASK_RESULTS/source.txt"
+          node --version >> "$TASK_RESULTS/source.txt"
+          corepack pnpm --version >> "$TASK_RESULTS/source.txt"
+          printf 'RUNNER_NAME=%s\nQWEN_CI_COVERAGE=%s\n' "$RUNNER_NAME" "${QWEN_CI_COVERAGE-unset}" >> "$TASK_RESULTS/source.txt"
+          test -z "${QWEN_CI_COVERAGE:-}"
+          for pair in \
+            'packages/web-shell/client/vite-config.test.ts:2e65c82ff2b3a2470b57b71d16e74c1c23df6f46' \
+            'packages/web-shell/vite.config.ts:95b1636fdd68826f139b97256b63c18edc4d01aa' \
+            'packages/web-shell/vitest.config.ts:b1b3f2e21d8a38ee9617f295898dac6a881f0cdc' \
+            'package.json:7b59e1b908d8b8e4a5c617c0df9c7e585b4b1d79' \
+            'pnpm-lock.yaml:74032b934e9b3e5454cec4dec8425ceee3d05a19'; do
+            file="${pair%:*}"
+            expected="${pair##*:}"
+            actual="$(git rev-parse "HEAD:$file")"
+            printf '%s %s\n' "$actual" "$file" >> "$TASK_RESULTS/source.txt"
+            test "$actual" = "$expected"
+          done
+      - name: Frozen dependency install
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Required workspace prerequisites
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee "$TASK_RESULTS/prerequisites.log"
+      - name: One focused Vite-config run with original timeout
+        working-directory: packages/web-shell
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+        run: |
+          set +e
+          npx vitest run --config vitest.config.ts client/vite-config.test.ts --retry=0 --reporter=default --reporter=json --outputFile="$TASK_RESULTS/tests.json" > "$TASK_RESULTS/tests.log" 2>&1
+          code=$?
+          cat "$TASK_RESULTS/tests.log"
+          printf '%s\n' "$code" > "$TASK_RESULTS/exit-code.txt"
+          exit "$code"
+      - name: Preserve collected case counts and outcomes
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const dir = process.env.TASK_RESULTS;
+          const r = JSON.parse(fs.readFileSync(path.join(dir, 'tests.json'), 'utf8'));
+          const summary = { total: r.numTotalTests, passed: r.numPassedTests, failed: r.numFailedTests, skipped: r.numPendingTests, files: r.testResults.map(f => ({name:f.name, status:f.status, tests:f.assertionResults.map(t => ({name:t.fullName, status:t.status, failureMessages:t.failureMessages}))})) };
+          fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
+          assert.equal(r.numTotalTests, 21, 'the complete unchanged Vite-config file must be collected');
+          console.log(JSON.stringify({total:r.numTotalTests,passed:r.numPassedTests,failed:r.numFailedTests,skipped:r.numPendingTests}));
+          JS
+      - name: Tracked source and configuration unchanged
+        if: always()
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-vite-${{ matrix.label }}
+          path: ${{ env.TASK_RESULTS }}
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      TASK_RESULTS: /tmp/review-probe-6828-tail-scripts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: be322861cadd08d6b485e6de7e189e2cb68497aa
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - name: Record final candidate and canonical gate
+        run: |
+          mkdir -p "$TASK_RESULTS"
+          test "$(git rev-parse HEAD)" = be322861cadd08d6b485e6de7e189e2cb68497aa
+          git log -1 --format=fuller > "$TASK_RESULTS/source.txt"
+          node --version >> "$TASK_RESULTS/source.txt"
+          printf '%s\n' 'npm run test:scripts' >> "$TASK_RESULTS/source.txt"
+      - name: Provision canonical Linux fixture tools if missing
+        timeout-minutes: 5
+        run: |
+          if ! command -v tmux >/dev/null || ! command -v zip >/dev/null || ! command -v unzip >/dev/null; then
+            timeout 140 sudo -n apt-get update -qq
+            timeout 140 sudo -n apt-get install -y -qq --no-install-recommends tmux zip unzip
+          fi
+          tmux -V
+          command -v zip unzip tar openssl
+      - name: Frozen dependency install
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Required workspace prerequisites
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee "$TASK_RESULTS/prerequisites.log"
+      - name: Canonical complete scripts gate
+        run: |
+          set -o pipefail
+          npm run test:scripts 2>&1 | tee "$TASK_RESULTS/test-scripts.log"
+      - name: Tracked source and configuration unchanged
+        if: always()
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-tail-scripts
+          path: ${{ env.TASK_RESULTS }}
+  serve-bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      TASK_RESULTS: /tmp/review-probe-6828-tail-serve-bundle
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: be322861cadd08d6b485e6de7e189e2cb68497aa
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - name: Record final candidate and canonical gate
+        run: |
+          mkdir -p "$TASK_RESULTS"
+          test "$(git rev-parse HEAD)" = be322861cadd08d6b485e6de7e189e2cb68497aa
+          git log -1 --format=fuller > "$TASK_RESULTS/source.txt"
+          node --version >> "$TASK_RESULTS/source.txt"
+          printf '%s\n' 'npm run check:serve-fast-path-bundle' >> "$TASK_RESULTS/source.txt"
+      - name: Frozen dependency install
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Canonical complete serve bundle gate
+        run: |
+          set -o pipefail
+          npm run check:serve-fast-path-bundle 2>&1 | tee "$TASK_RESULTS/serve-bundle.log"
+      - name: Tracked source and configuration unchanged
+        if: always()
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-tail-serve-bundle
+          path: ${{ env.TASK_RESULTS }}
