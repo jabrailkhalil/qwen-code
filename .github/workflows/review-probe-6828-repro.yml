@@ -1,0 +1,50 @@
+name: Reproduce review probe hook classification
+on:
+  push:
+    branches: [validation/review-probe-6828-repro-20261029]
+permissions:
+  contents: read
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      QWEN_PROBE_REPORT_DIR: /tmp/review-probe-6828-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Record exact source and global CLI availability
+        run: |
+          mkdir -p /tmp/review-probe-6828-results
+          git rev-parse HEAD > /tmp/review-probe-6828-results/source.txt
+          git rev-parse HEAD:packages/cli/src/commands/review/test-efficacy.ts >> /tmp/review-probe-6828-results/source.txt
+          node --version >> /tmp/review-probe-6828-results/source.txt
+          if command -v qwen >/dev/null 2>&1; then
+            timeout 30 qwen review test-efficacy --help > /tmp/review-probe-6828-results/global-qwen.log 2>&1 || true
+          else
+            printf '%s\n' 'Global qwen is unavailable on this clean runner; using real-reporter test-script fallback.' > /tmp/review-probe-6828-results/global-qwen.log
+          fi
+      - name: Frozen dependencies and required workspace prerequisites
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Prepare workspace prerequisites for the test-script fallback
+        run: npm run build
+      - name: Capture real Vitest reporter behavior against unchanged main source
+        working-directory: packages/cli
+        run: |
+          set +e
+          npx vitest run src/commands/review/test-efficacy.reporter.test.ts --reporter=default --reporter=json --outputFile=/tmp/review-probe-6828-results/reproduction.json > /tmp/review-probe-6828-results/reproduction.log 2>&1
+          code=$?
+          cat /tmp/review-probe-6828-results/reproduction.log
+          printf '%s\n' "$code" > /tmp/review-probe-6828-results/exit-code.txt
+          exit "$code"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-reproduction
+          path: /tmp/review-probe-6828-results
