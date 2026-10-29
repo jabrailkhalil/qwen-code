@@ -1,0 +1,116 @@
+name: Verify review probe assertion evidence
+on:
+  push:
+    branches: [validation/review-probe-6828-verify-20261029]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      QWEN_PROBE_REPORT_DIR: /tmp/review-probe-6828-verify/fixed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Exact published source and toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/review-probe-6828-verify
+          git rev-parse HEAD > /tmp/review-probe-6828-verify/source.txt
+          git rev-parse HEAD:packages/cli/src/commands/review/test-efficacy.ts >> /tmp/review-probe-6828-verify/source.txt
+          git diff --exit-code 7d13a061cf08bf8dc69d67ec9561b2c0eb9df6fe HEAD -- packages/cli/src/commands/review/test-efficacy.ts packages/cli/src/commands/review/test-efficacy.test.ts packages/cli/src/commands/review/test-efficacy.reporter.test.ts packages/cli/src/commands/review/test-efficacy.integration.test.ts
+          node --version >> /tmp/review-probe-6828-verify/source.txt
+      - name: Frozen dependency install
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Full workspace build and shipped bundle
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/review-probe-6828-verify/build.log
+          npm run bundle 2>&1 | tee /tmp/review-probe-6828-verify/bundle.log
+      - name: Built CLI version and command help
+        run: |
+          set -o pipefail
+          node dist/cli.js --version 2>&1 | tee /tmp/review-probe-6828-verify/cli-version.log
+          node dist/cli.js review test-efficacy --help 2>&1 | tee /tmp/review-probe-6828-verify/cli-help.log
+      - name: One bounded standard review attempt without credential changes
+        env:
+          QWEN_RUNTIME_DIR: /tmp/review-probe-6828-review-runtime
+        run: |
+          printf '%s\n' 'Review task: #6828 first bullet only; published source 7d13a061cf08bf8dc69d67ec9561b2c0eb9df6fe.' 'Files: packages/cli/src/commands/review/test-efficacy.ts, packages/cli/src/commands/review/test-efficacy.test.ts, packages/cli/src/commands/review/test-efficacy.reporter.test.ts, packages/cli/src/commands/review/test-efficacy.integration.test.ts.' > /tmp/review-probe-6828-verify/standard-review-task.txt
+          set +e
+          timeout --signal=TERM --kill-after=10s 90s node dist/cli.js review run packages/cli/src/commands/review/test-efficacy.ts --effort medium --timeout-minutes 1 --json > /tmp/review-probe-6828-verify/standard-review.stdout 2> /tmp/review-probe-6828-verify/standard-review.stderr
+          code=$?
+          printf '%s\n' "$code" > /tmp/review-probe-6828-verify/standard-review-exit-code.txt
+          cat /tmp/review-probe-6828-verify/standard-review.stdout
+          cat /tmp/review-probe-6828-verify/standard-review.stderr
+          exit 0
+      - name: Full workspace and integration typecheck
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee /tmp/review-probe-6828-verify/typecheck.log
+      - name: Strict changed-source lint and formatting
+        run: |
+          npx eslint packages/cli/src/commands/review/test-efficacy.ts packages/cli/src/commands/review/test-efficacy.test.ts packages/cli/src/commands/review/test-efficacy.reporter.test.ts packages/cli/src/commands/review/test-efficacy.integration.test.ts --max-warnings 0
+          npx prettier --experimental-cli --check packages/cli/src/commands/review/test-efficacy.ts packages/cli/src/commands/review/test-efficacy.test.ts packages/cli/src/commands/review/test-efficacy.reporter.test.ts packages/cli/src/commands/review/test-efficacy.integration.test.ts
+      - name: Entire affected review command test tree and real-reporter controls
+        working-directory: packages/cli
+        run: |
+          set -o pipefail
+          npx vitest run src/commands/review --reporter=default --reporter=json --outputFile=/tmp/review-probe-6828-verify/review-tests.json 2>&1 | tee /tmp/review-probe-6828-verify/review-tests.log
+      - name: Exact-base negative control and separate branch mutations
+        if: always()
+        run: node .github/scripts/review-probe-6828-verification.mjs
+      - name: Tracked source restored and unchanged
+        if: always()
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-verification
+          path: /tmp/review-probe-6828-verify
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      QWEN_PROBE_REPORT_DIR: /tmp/review-probe-6828-preflight/reporter
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 7d13a061cf08bf8dc69d67ec9561b2c0eb9df6fe
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Record exact published source
+        run: |
+          mkdir -p /tmp/review-probe-6828-preflight
+          test "$(git rev-parse HEAD)" = 7d13a061cf08bf8dc69d67ec9561b2c0eb9df6fe
+          git rev-parse HEAD > /tmp/review-probe-6828-preflight/source.txt
+          node --version >> /tmp/review-probe-6828-preflight/source.txt
+      - name: Bootstrap dependencies required by the preflight clean command
+        run: corepack pnpm install --frozen-lockfile --reporter=append-only
+      - name: Complete repository preflight without filtered gates
+        run: |
+          set -o pipefail
+          npm run preflight 2>&1 | tee /tmp/review-probe-6828-preflight/preflight.log
+      - name: Record any formatting or generated tracked changes
+        if: always()
+        run: |
+          git diff > /tmp/review-probe-6828-preflight/post-preflight.patch
+          git status --short > /tmp/review-probe-6828-preflight/post-preflight-status.txt
+          git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: review-probe-6828-preflight
+          path: /tmp/review-probe-6828-preflight
