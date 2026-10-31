@@ -82,9 +82,10 @@ check('shortening cannot clear combined overflow until line count falls', () => 
   assert(byName['both-original'].hasReaderWarning);
   assert(byName['both-shorter-descriptions'].hasReaderWarning);
 });
-check('a truly huge path remains a length case and shortening it clears overflow', () => {
+check('a protected huge path is not offered description shortening and a shorter path fits', () => {
   assert(byName['overlong-original'].hasReaderWarning);
-  assert(byName['overlong-original'].falseLengthCause);
+  assert(!byName['overlong-original'].falseLengthCause);
+  assert(byName['overlong-original'].warning.includes('Prune or merge entries to fit the character budget.'));
   assert(!byName['overlong-shorter-path'].hasReaderWarning);
 });
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
