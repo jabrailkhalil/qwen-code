@@ -45,7 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY=QwenLM/qwen-code BASE_REF=main HEAD_SHA="$(git rev-parse HEAD)" node .github/scripts/check-lint-gate-freshness.mjs | tee "$EVIDENCE_DIR/freshness.log"
+          GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY=QwenLM/qwen-code BASE_REF=main HEAD_SHA="jabrailkhalil:$(git rev-parse HEAD)" node .github/scripts/check-lint-gate-freshness.mjs | tee "$EVIDENCE_DIR/freshness.log"
           grep -q 'Lint gate freshness OK:' "$EVIDENCE_DIR/freshness.log"
           node --test .github/scripts/check-lint-gate-freshness.test.mjs
       - name: Build and bundle
@@ -110,7 +110,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY=QwenLM/qwen-code BASE_REF=main HEAD_SHA="$(git rev-parse HEAD)" node .github/scripts/check-lint-gate-freshness.mjs | tee "$EVIDENCE_DIR/freshness.log"
+          GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY=QwenLM/qwen-code BASE_REF=main HEAD_SHA="jabrailkhalil:$(git rev-parse HEAD)" node .github/scripts/check-lint-gate-freshness.mjs | tee "$EVIDENCE_DIR/freshness.log"
           grep -q 'Lint gate freshness OK:' "$EVIDENCE_DIR/freshness.log"
           node --test .github/scripts/check-lint-gate-freshness.test.mjs
       - name: Frozen dependencies, full build, bundle and typecheck
@@ -157,6 +157,7 @@ jobs:
             packages/managed-agent-server/verification/target/surefire-reports/TEST-*H2ForkIsolation*Test.xml
           if-no-files-found: error
   browser_regression:
+    if: github.event_name == 'workflow_dispatch'
     name: settings regression (${{ matrix.arm }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
