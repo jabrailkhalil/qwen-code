@@ -1,4 +1,4 @@
-name: Reader advice merge validation October 31
+name: Reader and cleanup follow-up November 2
 on:
   workflow_dispatch:
   push:
@@ -8,7 +8,7 @@ permissions:
 env:
   CI: 'true'
   QWEN_SKIP_PREPARE: '1'
-  BASE_SHA: 4cd3372bb669c77a116b0bbfc4a5301a1d639cad
+  BASE_SHA: 7b4b35375071183b155089b111a6b3c887c3fe03
 jobs:
   reader:
     runs-on: ubuntu-latest
@@ -24,7 +24,7 @@ jobs:
           cp .github/scripts/verify-reader-advice.cjs "$RUNNER_TEMP/verify-reader-advice.cjs"
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: 702d722bcf1abb128a4d6830f06736991fb6f212
+          ref: 7487f46896b4550f3de921e3fdb888b0650cccfc
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
@@ -33,7 +33,7 @@ jobs:
           package-manager-cache: false
       - name: Verify exact source
         run: |
-          test "$(git rev-parse HEAD)" = '702d722bcf1abb128a4d6830f06736991fb6f212'
+          test "$(git rev-parse HEAD)" = '7487f46896b4550f3de921e3fdb888b0650cccfc'
           mkdir -p "$EVIDENCE_DIR"
           git rev-parse HEAD > "$EVIDENCE_DIR/source-head.txt"
           node --version > "$EVIDENCE_DIR/node-version.txt"
@@ -41,6 +41,13 @@ jobs:
         run: |
           corepack enable
           corepack pnpm install --frozen-lockfile
+      - name: Exact current lint freshness and its complete unit tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY=QwenLM/qwen-code BASE_REF=main HEAD_SHA="$(git rev-parse HEAD)" node .github/scripts/check-lint-gate-freshness.mjs | tee "$EVIDENCE_DIR/freshness.log"
+          grep -q 'Lint gate freshness OK:' "$EVIDENCE_DIR/freshness.log"
+          node --test .github/scripts/check-lint-gate-freshness.test.mjs
       - name: Build and bundle
         run: npm run build && npm run bundle
       - name: Repository typecheck
@@ -69,4 +76,134 @@ jobs:
         with:
           name: reader-advice-evidence
           path: ${{ runner.temp }}/memory-reader-evidence/
+          if-no-files-found: error
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      EVIDENCE_DIR: ${{ github.workspace }}/cleanup-evidence
+      MAVEN_ARGS: -Dmaven.repo.local=${{ github.workspace }}/task-maven-repository
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: 14d9a01994bdc30318489a0a552e2f2b712788b8
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Exact source and toolchains
+        run: |
+          test "$(git rev-parse HEAD)" = '14d9a01994bdc30318489a0a552e2f2b712788b8'
+          mkdir -p "$EVIDENCE_DIR"
+          node --version
+          java -version
+          mvn --version
+          git rev-parse HEAD > "$EVIDENCE_DIR/source-head.txt"
+          python3 -c 'import re,subprocess; s=subprocess.check_output(["mvn","--version"],text=True); v=tuple(map(int,re.search(r"Apache Maven (\d+)\.(\d+)\.(\d+)",s).groups())); assert v>=(3,8,9),v'
+      - name: Exact current lint freshness and complete unit tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          GITHUB_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY=QwenLM/qwen-code BASE_REF=main HEAD_SHA="$(git rev-parse HEAD)" node .github/scripts/check-lint-gate-freshness.mjs | tee "$EVIDENCE_DIR/freshness.log"
+          grep -q 'Lint gate freshness OK:' "$EVIDENCE_DIR/freshness.log"
+          node --test .github/scripts/check-lint-gate-freshness.test.mjs
+      - name: Frozen dependencies, full build, bundle and typecheck
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          npm run build
+          npm run bundle
+          npm run typecheck
+      - name: Changed TypeScript lint and format
+        run: |
+          corepack pnpm exec prettier --check packages/cli/src/serve/hosted-harness-session.ts packages/cli/src/serve/hosted-harness-session.test.ts
+          corepack pnpm exec eslint packages/cli/src/serve/hosted-harness-session.ts packages/cli/src/serve/hosted-harness-session.test.ts --max-warnings 0
+      - name: Complete hosted session unit file
+        working-directory: packages/cli
+        run: corepack pnpm exec vitest run src/serve/hosted-harness-session.test.ts --coverage.enabled=false --maxWorkers=2 --minWorkers=1 --reporter=default --reporter=json --outputFile.json="$EVIDENCE_DIR/hosted-session.json"
+      - name: Install exact sibling SDK as prerequisite
+        run: mvn -B -ntp -f packages/sdk-java/qwencode/pom.xml -DskipTests -Dgpg.skip=true install
+      - name: Real Surefire H2 fork boundary and reactor Checkstyle
+        working-directory: packages/managed-agent-server
+        run: mvn -B -ntp -Dtest=H2ForkIsolationFirstTest,H2ForkIsolationSecondTest test checkstyle:check
+      - name: Verify both H2 cases executed without skips
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, xml.etree.ElementTree as ET
+          reports=[]
+          for name in ['H2ForkIsolationFirstTest', 'H2ForkIsolationSecondTest']:
+              files=list(Path('packages/managed-agent-server/verification/target/surefire-reports').glob('TEST-*'+name+'.xml'))
+              assert len(files)==1, files
+              root=ET.parse(files[0]).getroot()
+              assert root.get('tests')=='1' and all(root.get(k,'0')=='0' for k in ['failures','errors','skipped']), root.attrib
+              reports.append(root.attrib)
+          Path('cleanup-evidence/h2-fork-summary.json').write_text(json.dumps(reports,indent=2))
+          PY
+      - name: Final clean tracked source
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cleanup-followup-evidence
+          path: |
+            cleanup-evidence/
+            packages/managed-agent-server/verification/target/surefire-reports/TEST-*H2ForkIsolation*Test.xml
+          if-no-files-found: error
+  browser_regression:
+    name: settings regression (${{ matrix.arm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: main
+            ref: 7b4b35375071183b155089b111a6b3c887c3fe03
+          - arm: reader
+            ref: 7487f46896b4550f3de921e3fdb888b0650cccfc
+          - arm: cleanup
+            ref: 14d9a01994bdc30318489a0a552e2f2b712788b8
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Exact source and frozen install
+        run: |
+          test "$(git rev-parse HEAD)" = '${{ matrix.ref }}'
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+      - name: Build real CLI and browser prerequisites
+        run: npm run build && npm run bundle
+      - name: Install Chromium through exact Playwright dependency
+        run: |
+          node node_modules/playwright/cli.js install --with-deps chromium
+          nested_cli=node_modules/@playwright/test/node_modules/playwright/cli.js
+          if [ -f "$nested_cli" ]; then node "$nested_cli" install chromium; fi
+      - name: Choose isolated browser port
+        run: |
+          port="$(node -e "const net=require('node:net');const s=net.createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close();});")"
+          echo "PLAYWRIGHT_PORT=$port" >> "$GITHUB_ENV"
+      - name: Complete settings-exclusions spec against real daemon
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/settings-result.json
+        run: npm run test:e2e --workspace=packages/web-shell -- --project=chromium client/e2e/web-shell.settings-exclusions.spec.ts --workers=2 --reporter=line,json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: settings-${{ matrix.arm }}
+          path: |
+            settings-result.json
+            packages/web-shell/client/e2e/test-results/
           if-no-files-found: error
