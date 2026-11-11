@@ -1,0 +1,107 @@
+name: Proxy environment CI comparison
+
+on:
+  push:
+    branches: [validation/qwen-proxy-env-control-nov11]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qwen-proxy-env-control-nov11
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.repository == 'jabrailkhalil/qwen-code'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: main
+            sha: befc947ee5cc0ace939e0b3c60d6bcb6cde35a39
+            tree: 1990d4c16d76da2e777563a4e7e258a56eb4cb6a
+            files: 8
+          - arm: feishu
+            sha: fbb59cd4a48738181c87a4629a91dc9fae321e74
+            tree: 3b38686e1a6341a9b79ad8f661a4581570637456
+            files: 2
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      ARM: ${{ matrix.arm }}
+      SOURCE_SHA: ${{ matrix.sha }}
+      SOURCE_TREE: ${{ matrix.tree }}
+      EXPECTED_FILES: ${{ matrix.files }}
+      INPUT_BASE: 51c8b617c06f5c4fcb90a720776853dbe8e00eb3
+      RESULTS: ${{ github.workspace }}/results
+      HARNESS: ${{ github.workspace }}/harness/.github/author-validation
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          sparse-checkout: .github/author-validation
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: QwenLM/qwen-code
+          ref: ${{ matrix.sha }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - name: Verify exact source and unchanged proxy test inputs
+        id: identity
+        run: bash "$HARNESS/qwen-proxy-env-control.sh" identity
+      - name: Install the frozen dependency tree
+        id: install
+        run: bash "$HARNESS/qwen-proxy-env-control.sh" install
+      - name: Verify the actual locked Undici version
+        id: dependency
+        run: bash "$HARNESS/qwen-proxy-env-control.sh" dependency
+      - name: Original proxy tests with only proxy variables removed
+        id: clean_env
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-proxy-env-control.sh" clean
+      - name: Original proxy tests with a controlled lowercase proxy
+        id: lowercase_env
+        if: ${{ !cancelled() && steps.dependency.outcome == 'success' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-proxy-env-control.sh" lowercase
+      - name: Require the exact positive and negative test records
+        id: records
+        if: ${{ !cancelled() && steps.dependency.outcome == 'success' }}
+        run: bash "$HARNESS/qwen-proxy-env-control.sh" records
+      - name: Verify tracked source remains unchanged
+        id: clean
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxy-env-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/results
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve all provisioning and unexpected test failures
+        if: ${{ !cancelled() }}
+        env:
+          IDENTITY: ${{ steps.identity.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
+          DEPENDENCY: ${{ steps.dependency.outcome }}
+          POSITIVE: ${{ steps.clean_env.outcome }}
+          NEGATIVE: ${{ steps.lowercase_env.outcome }}
+          RECORDS: ${{ steps.records.outcome }}
+          CLEAN: ${{ steps.clean.outcome }}
+        run: |
+          for result in "$IDENTITY" "$INSTALL" "$DEPENDENCY" "$POSITIVE" "$NEGATIVE" "$RECORDS" "$CLEAN"; do
+            test "$result" = success
+          done
