@@ -1,0 +1,132 @@
+name: Qwen scoped main integration verification
+
+on:
+  push:
+    branches: [validation/qwen-ci-followup-nov11]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qwen-main-followup-nov11
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'jabrailkhalil/qwen-code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: base
+            sha: 51c8b617c06f5c4fcb90a720776853dbe8e00eb3
+            tree: 87069af8e7e3d437ed792e09b3b82b22f32d437b
+            files: 0
+          - arm: feishu
+            sha: d181a74ddd43e96d5d2457e64b0be48148549889
+            tree: cb392accb0f61d8e88916ade186273937fa6ee54
+            files: 2
+          - arm: mobile
+            sha: ccec8fcb5f9893637bdc377a4a5512b1243f7e0d
+            tree: 0acb16d591e87f5448bc48324c248ccd45f6aa25
+            files: 23
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      ARM: ${{ matrix.arm }}
+      SOURCE_SHA: ${{ matrix.sha }}
+      SOURCE_TREE: ${{ matrix.tree }}
+      EXPECTED_FILES: ${{ matrix.files }}
+      BASE_SHA: 51c8b617c06f5c4fcb90a720776853dbe8e00eb3
+      RESULTS: ${{ github.workspace }}/results
+      HARNESS: ${{ github.workspace }}/harness/.github/author-validation
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          sparse-checkout: .github/author-validation
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: jabrailkhalil/qwen-code
+          ref: ${{ matrix.sha }}
+          path: source
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - name: Verify exact source and harness syntax
+        id: identity
+        run: bash "$HARNESS/qwen-followup.sh" identity
+      - name: Install the pinned frozen dependency tree
+        id: install
+        run: bash "$HARNESS/qwen-followup.sh" install
+      - name: Build and bundle this exact source once
+        id: build
+        run: bash "$HARNESS/qwen-followup.sh" build
+      - name: Workspace and integration typecheck
+        id: types
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-followup.sh" types
+      - name: Unmodified scoped ESLint and Prettier
+        id: style
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-followup.sh" style
+      - name: Full Prettier scan with resource diagnostics
+        id: full
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.arm != 'feishu' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-followup.sh" full-format
+      - name: Relevant functional and upstream CI regression suites
+        id: functional
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-followup.sh" functional
+      - name: Unchanged bootstrap host control
+        id: host
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-followup.sh" bootstrap-host
+      - name: Controlled missing-machine-id bootstrap comparison
+        id: container
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-followup.sh" bootstrap-container
+      - name: Verify tracked source remains unchanged
+        id: clean
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qwen-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/results
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce all required positive and comparison results
+        if: ${{ !cancelled() }}
+        env:
+          IDENTITY: ${{ steps.identity.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          TYPES: ${{ steps.types.outcome }}
+          STYLE: ${{ steps.style.outcome }}
+          FULL: ${{ steps.full.outcome }}
+          FUNCTIONAL: ${{ steps.functional.outcome }}
+          HOST: ${{ steps.host.outcome }}
+          CONTAINER: ${{ steps.container.outcome }}
+          CLEAN: ${{ steps.clean.outcome }}
+        run: |
+          for result in "$IDENTITY" "$INSTALL" "$BUILD" "$TYPES" "$STYLE" "$FUNCTIONAL" "$HOST" "$CONTAINER" "$CLEAN"; do
+            test "$result" = success
+          done
+          if [ "$ARM" != feishu ]; then test "$FULL" = success; fi
