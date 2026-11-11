@@ -1,0 +1,108 @@
+name: Provider startup CI comparison
+
+on:
+  push:
+    branches: [validation/qwen-provider-control-nov11]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qwen-provider-control-nov11
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.repository == 'jabrailkhalil/qwen-code'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: main
+            sha: 3c9522061805592260dd5c93e7ae473073fff7e8
+            tree: d0265a6d04545b574084e1c7064b9432d5c374ce
+            files: 7
+          - arm: mobile
+            sha: ccec8fcb5f9893637bdc377a4a5512b1243f7e0d
+            tree: 0acb16d591e87f5448bc48324c248ccd45f6aa25
+            files: 23
+    env:
+      CI: 'true'
+      QWEN_SKIP_PREPARE: '1'
+      ARM: ${{ matrix.arm }}
+      SOURCE_SHA: ${{ matrix.sha }}
+      SOURCE_TREE: ${{ matrix.tree }}
+      EXPECTED_FILES: ${{ matrix.files }}
+      INPUT_BASE: 51c8b617c06f5c4fcb90a720776853dbe8e00eb3
+      RESULTS: ${{ github.workspace }}/results
+      HARNESS: ${{ github.workspace }}/harness/.github/author-validation
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          sparse-checkout: .github/author-validation
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: QwenLM/qwen-code
+          ref: ${{ matrix.sha }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - name: Verify exact source, platform and unchanged probe inputs
+        id: identity
+        run: bash "$HARNESS/qwen-provider-control.sh" identity
+      - name: Install the frozen dependency tree
+        id: install
+        run: bash "$HARNESS/qwen-provider-control.sh" install
+      - name: Original 15-case provider file on the hosted ARM64 runner
+        id: host
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-provider-control.sh" host
+      - name: Pull the pinned multiarch Node image
+        id: image
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bash "$HARNESS/qwen-provider-control.sh" image
+      - name: Original provider file in the natural ARM64 container
+        id: container
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        continue-on-error: true
+        run: bash "$HARNESS/qwen-provider-control.sh" container
+      - name: Inspect both raw Vitest records
+        id: records
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bash "$HARNESS/qwen-provider-control.sh" records
+      - name: Verify tracked source remains unchanged
+        id: clean
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code HEAD -- .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-${{ matrix.arm }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/results
+          if-no-files-found: error
+          retention-days: 14
+      - name: Keep real test and provisioning failures visible
+        if: ${{ !cancelled() }}
+        env:
+          IDENTITY: ${{ steps.identity.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
+          HOST: ${{ steps.host.outcome }}
+          IMAGE: ${{ steps.image.outcome }}
+          CONTAINER: ${{ steps.container.outcome }}
+          RECORDS: ${{ steps.records.outcome }}
+          CLEAN: ${{ steps.clean.outcome }}
+        run: |
+          for result in "$IDENTITY" "$INSTALL" "$HOST" "$IMAGE" "$CONTAINER" "$RECORDS" "$CLEAN"; do
+            test "$result" = success
+          done
